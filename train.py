@@ -7,6 +7,7 @@ from typing import Optional, Union, List, Dict, Tuple
 import torch
 import collections
 import random
+import wandb
 
 from datasets import load_dataset
 
@@ -190,11 +191,14 @@ class OurTrainingArguments(TrainingArguments):
     ## By default, we evaluate STS (dev) during training (for selecting best checkpoints) and evaluate 
     ## both STS and transfer tasks (dev) at the end of training. Using --eval_transfer will allow evaluating
     ## both STS and transfer tasks (dev) during training.
+    report_to: str = field(
+        default="wandb",
+    )
     eval_transfer: bool = field(
         default=False,
         metadata={"help": "Evaluate transfer task dev sets (in validation)."}
     )
-
+    
     @cached_property
     @torch_required
     def _setup_devices(self) -> "torch.device":
@@ -393,7 +397,7 @@ def main():
         sent1_cname = column_names[1]
         sent2_cname = column_names[2]
     elif len(column_names) == 1:
-        # Unsupervised datasets
+        # Unsupervised datasets : 동일한 문장 두번 들어가도록
         sent0_cname = column_names[0]
         sent1_cname = column_names[0]
     else:
@@ -431,15 +435,14 @@ def main():
             truncation=True,
             padding="max_length" if data_args.pad_to_max_length else False,
         )
-
+        #TODO : 악 여기부터 다시 봐야겠다.!!!!!
         features = {}
         if sent2_cname is not None:
             for key in sent_features:
                 features[key] = [[sent_features[key][i], sent_features[key][i+total], sent_features[key][i+total*2]] for i in range(total)]
         else:
             for key in sent_features:
-                features[key] = [[sent_features[key][i], sent_features[key][i+total]] for i in range(total)]
-            
+                features[key] = [[sent_features[key][i], sent_features[key][i+total]] for i in range(total)] #전체 문장을 돌면서 
         return features
 
     if training_args.do_train:
@@ -513,8 +516,8 @@ def main():
             else:
                 special_tokens_mask = special_tokens_mask.bool()
 
-            probability_matrix.masked_fill_(special_tokens_mask, value=0.0)
-            masked_indices = torch.bernoulli(probability_matrix).bool()
+            probability_matrix.masked_fill_(special_tokens_mask, value=0.0) 
+            masked_indices = torch.bernoulli(probability_matrix).bool() 
             labels[~masked_indices] = -100  # We only compute loss on masked tokens
 
             # 80% of the time, we replace masked input tokens with tokenizer.mask_token ([MASK])
@@ -540,6 +543,13 @@ def main():
     )
     trainer.model_args = model_args
 
+    #wandb
+    wandb.init(
+        name='SimCSE', 
+        project='STS', 
+        config=training_args
+        )
+    
     # Training
     if training_args.do_train:
         model_path = (

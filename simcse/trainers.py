@@ -9,6 +9,7 @@ import shutil
 import time
 import warnings
 from pathlib import Path
+import wandb
 import importlib.util
 from packaging import version
 from transformers import Trainer
@@ -463,6 +464,7 @@ class CLTrainer(Trainer):
                 else:
                     tr_loss += self.training_step(model, inputs)
                 self._total_flos += self.floating_point_ops(inputs)
+                wandb.log({'loss' : tr_loss}, step=step)
 
                 if (step + 1) % self.args.gradient_accumulation_steps == 0 or (
                     # last step in epoch but step is always smaller than gradient_accumulation_steps
