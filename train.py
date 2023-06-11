@@ -174,7 +174,7 @@ class DataTrainingArguments:
     mlm_probability: float = field(
         default=0.15, 
         metadata={"help": "Ratio of tokens to mask for MLM (only effective if --do_mlm)"}
-    )
+    ),
 
     def __post_init__(self):
         if self.dataset_name is None and self.train_file is None and self.validation_file is None:
@@ -252,7 +252,8 @@ def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
-
+    
+    # ----- Experiement Arguments -----
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, OurTrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
@@ -294,6 +295,8 @@ def main():
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
+
+    # ----- Data Loading -----
     # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
     # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
     # (the dataset will be downloaded automatically from the datasets Hub
@@ -309,19 +312,15 @@ def main():
     extension = data_args.train_file.split(".")[-1]
     if extension == "txt":
         extension = "text"
+    # >>> load_dataset을 사용하면 cache_dir에 데이터셋이 저장되고, 이후에는 다시 다운로드하지 않는다.
+    # >>> 해당 링크를 읽어보면 더 빠르게 이해할 수 있음. https://huggingface.co/docs/datasets/about_arrow
     if extension == "csv":
         datasets = load_dataset(extension, data_files=data_files, cache_dir="./data/", delimiter="\t" if "tsv" in data_args.train_file else ",")
     else:
         datasets = load_dataset(extension, data_files=data_files, cache_dir="./data/")
 
-    # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
-    # https://huggingface.co/docs/datasets/loading_datasets.html.
-
-    # Load pretrained model and tokenizer
-    #
-    # Distributed training:
-    # The .from_pretrained methods guarantee that only one local process can concurrently
-    # download model & vocab.
+    
+    # ----- Model Configuration -----
     config_kwargs = {
         "cache_dir": model_args.cache_dir,
         "revision": model_args.model_revision,
@@ -335,6 +334,7 @@ def main():
         config = CONFIG_MAPPING[model_args.model_type]()
         logger.warning("You are instantiating a new config instance from scratch.")
 
+    # ----- Tokenizer -----
     tokenizer_kwargs = {
         "cache_dir": model_args.cache_dir,
         "use_fast": model_args.use_fast_tokenizer,
@@ -351,6 +351,7 @@ def main():
             "You can do it from another script, save it, and load it from here, using --tokenizer_name."
         )
 
+    # ----- Model -----
     if model_args.model_name_or_path:
         if 'roberta' in model_args.model_name_or_path:
             model = RobertaForCL.from_pretrained(
@@ -362,6 +363,7 @@ def main():
                 use_auth_token=True if model_args.use_auth_token else None,
                 model_args=model_args                  
             )
+        ### >>> 저는 bert-base-uncased를 사용했습니다.
         elif 'bert' in model_args.model_name_or_path:
             model = BertForCL.from_pretrained(
                 model_args.model_name_or_path,
@@ -382,8 +384,9 @@ def main():
         logger.info("Training new model from scratch")
         model = AutoModelForMaskedLM.from_config(config)
 
-    model.resize_token_embeddings(len(tokenizer))
+    model.resize_token_embeddings(len(tokenizer)) #input embedding과 output embedding size가 다른 경우 맞춰주기 위함.
 
+    # ----- Data Preprocessing for Contrastive Learning -----
     # Prepare features
     column_names = datasets["train"].column_names
     sent2_cname = None
@@ -397,13 +400,16 @@ def main():
         sent1_cname = column_names[1]
         sent2_cname = column_names[2]
     elif len(column_names) == 1:
-        # Unsupervised datasets : 동일한 문장 두번 들어가도록
+        # >>> Unsupervised datasets : 동일한 문장 두번 들어가도록
         sent0_cname = column_names[0]
         sent1_cname = column_names[0]
     else:
         raise NotImplementedError
 
     def prepare_features(examples):
+        # >>> 함수 내부에 함수를 정의해서 사용하는 이유 : prepare_features 안에서 main 내에서 정의된 변수들을 많이 사용하고 있음. 
+        # 그러므로 main 내에서 정의된 변수들을 함수 내부에서 사용하기 위해서는 함수 내부에 정의해야 함.
+
         # padding = longest (default)
         #   If no sentence in the batch exceed the max length, then use
         #   the max sentence length in the batch, otherwise use the 
@@ -420,7 +426,7 @@ def main():
             if examples[sent1_cname][idx] is None:
                 examples[sent1_cname][idx] = " "
         
-        sentences = examples[sent0_cname] + examples[sent1_cname]
+        sentences = examples[sent0_cname] + examples[sent1_cname] #[sent1, ..., sentN, sent1', ..., sentN']
 
         # If hard negative exists
         if sent2_cname is not None:
@@ -434,16 +440,16 @@ def main():
             max_length=data_args.max_seq_length,
             truncation=True,
             padding="max_length" if data_args.pad_to_max_length else False,
-        )
-        #TODO : 악 여기부터 다시 봐야겠다.!!!!!
+        ) 
+        
         features = {}
         if sent2_cname is not None:
             for key in sent_features:
                 features[key] = [[sent_features[key][i], sent_features[key][i+total], sent_features[key][i+total*2]] for i in range(total)]
         else:
-            for key in sent_features:
+            for key in sent_features: #key = (input_ids, token_type_ids, attention_mask)
                 features[key] = [[sent_features[key][i], sent_features[key][i+total]] for i in range(total)] #전체 문장을 돌면서 
-        return features
+        return features #{'input_ids' : [[sent1, sent1'], ..., [sentN, sentN']], 'token_type_ids' : list, 'attention_mask' : list}
 
     if training_args.do_train:
         train_dataset = datasets["train"].map(
@@ -532,6 +538,7 @@ def main():
             # The rest of the time (10% of the time) we keep the masked input tokens unchanged
             return inputs, labels
 
+    # 편하게 batch 만들어봅시다 ~
     data_collator = default_data_collator if data_args.pad_to_max_length else OurDataCollatorWithPadding(tokenizer)
 
     trainer = CLTrainer(
@@ -550,7 +557,7 @@ def main():
         config=training_args
         )
     
-    # Training
+    # ---- Training ----
     if training_args.do_train:
         model_path = (
             model_args.model_name_or_path
@@ -571,7 +578,7 @@ def main():
             # Need to save the state, since Trainer.save_model saves only the tokenizer with the model
             trainer.state.save_to_json(os.path.join(training_args.output_dir, "trainer_state.json"))
 
-    # Evaluation
+    # ---- Evaluation ----
     results = {}
     if training_args.do_eval:
         logger.info("*** Evaluate ***")

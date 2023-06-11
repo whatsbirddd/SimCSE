@@ -287,13 +287,13 @@ class CLTrainer(Trainer):
         # number of training steps per epoch: num_update_steps_per_epoch
         # total number of training steps to execute: max_steps
         if train_dataset_is_sized:
-            num_update_steps_per_epoch = len(train_dataloader) // self.args.gradient_accumulation_steps
+            num_update_steps_per_epoch = len(train_dataloader) // self.args.gradient_accumulation_steps #accumulation을 사용한다면, 실제 업데이트 횟수 구해야함. 
             num_update_steps_per_epoch = max(num_update_steps_per_epoch, 1)
             if self.args.max_steps > 0:
                 max_steps = self.args.max_steps
                 num_train_epochs = self.args.max_steps // num_update_steps_per_epoch + int(
                     self.args.max_steps % num_update_steps_per_epoch > 0
-                )
+                ) #최대 step수 // epoch마다 update되는 횟수(하나의 epoch을 결정하는 횟수) + 나누어 떨어지지 않으면 1회 더하기
             else:
                 max_steps = math.ceil(self.args.num_train_epochs * num_update_steps_per_epoch)
                 num_train_epochs = math.ceil(self.args.num_train_epochs)
@@ -303,15 +303,7 @@ class CLTrainer(Trainer):
             num_train_epochs = 1
             num_update_steps_per_epoch = max_steps
 
-        if self.args.deepspeed:
-            model, optimizer, lr_scheduler = init_deepspeed(self, num_training_steps=max_steps)
-            self.model = model.module
-            self.model_wrapped = model  # will get further wrapped in DDP
-            self.deepspeed = model  # DeepSpeedEngine object
-            self.optimizer = optimizer
-            self.lr_scheduler = lr_scheduler
-        else:
-            self.create_optimizer_and_scheduler(num_training_steps=max_steps)
+        self.create_optimizer_and_scheduler(num_training_steps=max_steps)
 
         self.state = TrainerState()
         self.state.is_hyper_param_search = trial is not None

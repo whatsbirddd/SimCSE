@@ -25,4 +25,5 @@ python train.py \
     --do_train \
     --do_eval \
     --fp16 \
+    --max_steps 20000 \
     "$@"
